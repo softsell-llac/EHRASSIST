@@ -1,0 +1,14 @@
+{
+  "dependencies": {
+    "@google-cloud/speech": "^7.0.1",
+    "@google-cloud/text-to-speech": "^6.0.1",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "http": "^0.0.1-security",
+    "mysql": "^2.18.1",
+    "mysql2": "^3.14.0",
+    "openai": "^4.89.0",
+    "uuid": "^11.1.0",
+    "ws": "^8.18.1"
+  }
+}
