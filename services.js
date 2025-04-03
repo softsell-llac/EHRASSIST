@@ -4,327 +4,354 @@ const app = express();
 const server = require("http").createServer(app);
 const wss = new WebSocket.Server({ server });
 const path = require("path");
-const fs = require("fs");
-const { v4: uuidv4 } = require("uuid");
-const { selectQuery, insertQuery, updateQuery, deleteQuery } = require('./db');
-
 require("dotenv").config();
+const { selectQuery, updateQuery, insertQuery } = require('./db');
+const { isCallActive, updateCallIfActive } = require('./twilioService');
+const { createRecognizeStream } = require('./googleService');
+const { callOpenAIWithTimeout, Price } = require('./openaiService');
+const { searchDocuments } = require('./weaviateservices.mjs');
 
-// Include Google Speech to Text and Text-to-Speech
-const speech = require("@google-cloud/speech");
-const textToSpeech = require("@google-cloud/text-to-speech");
-const client = new speech.SpeechClient();
-const ttsClient = new textToSpeech.TextToSpeechClient();
-
-// OpenAI API Setup
-const { OpenAI } = require("openai");
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-
-// Configure Transcription Request
-const request = {
-  config: {
-    encoding: "MULAW",
-    sampleRateHertz: 8000,
-    languageCode: "en-GB",
-    model: "phone_call", 
-  },
-  //interimResults: true, // If you want interim results, set this to true
-};
-
-// Function to map any model version (like "gpt-3.5-turbo-0125") to base model name
-function getBaseModelName(model) {
-  if (model.startsWith("gpt-3.5-turbo")) {
-    return "gpt-3.5-turbo";
-  } else if (model.startsWith("gpt-4")) {
-    return "gpt-4";
-  }
-  return model; // If model is not recognized, return as is
-}
-
-function Price(model){
-  const baseModel = getBaseModelName(model); // Get the base model name
-  const pricing = {
-    'gpt-3.5-turbo': {
-      'prompt': 0.001,
-      'completion': 0.002,
-    },
-    'gpt-4': {
-      'prompt': 0.03,
-      'completion': 0.06,
+// Helper function to limit context size
+function limitContextSize(documents, maxTokens = 2000) {
+  let tokenCount = 0;
+  const estimatedTokensPerChar = 0.25; // Rough estimate: 4 chars ≈ 1 token
+  const result = [];
+  
+  for (const doc of documents) {
+    // Estimate tokens in this document
+    const docContent = `Document: ${doc.title || 'Untitled'}\n${doc.content || 'No content available'}`;
+    const estimatedTokens = Math.ceil(docContent.length * estimatedTokensPerChar);
+    
+    // Check if adding this document would exceed our limit
+    if (tokenCount + estimatedTokens > maxTokens) {
+      break;
     }
+    
+    result.push(doc);
+    tokenCount += estimatedTokens;
+  }
+  
+  return {
+    documents: result,
+    estimatedTokens: tokenCount,
+    truncated: result.length < documents.length
   };
-  const model_pricing = pricing[baseModel];
-  return model_pricing; 
-
 }
 
-// Timer and Pause Detection Variables
-let lastAudioReceivedTime = Date.now();
-const PAUSE_THRESHOLD = 3000; // 3 seconds pause threshold
-let recognizeStream = null;
+// Helper function to format TTS responses
+function formatTTSResponse(text) {
+  // Remove excessive newlines and whitespace
+  let formatted = text.replace(/\n+/g, ' ').replace(/\s+/g, ' ');
+  
+  // Break very long responses into digestible chunks if needed
+  if (formatted.length > 1000) {
+    // Add strategic pauses for better listening experience
+    formatted = formatted.replace(/\. /g, '. <break time="500ms"/> ');
+  }
+  
+  return formatted;
+}
 
+// WebSocket connections
 wss.on("connection", function connection(ws) {
-    console.log("New Connection Initiated");
-  
-    let callSid1 = uuidv4(); // Generate unique call SID
-    let isNameCollected = false;
-    let isRoleCollected = false;
-    let isDepartmentCollected = false;
-    let isIssueCollected = false;
-  
-    let callerName = '';
-    let callerRole = '';
-    let callerDepartment = '';
-    let callerIssue = '';
-  
-    ws.on("message", function incoming(message) {
-      const msg = JSON.parse(message);
-  
-      switch (msg.event) {
-        case "connected":
-          console.log(`A new call has connected.`);
-          break;
-          case "twilio-playback":
-            const twiml = msg.twilioTwiML;
-        console.log("TwiML for playback received: ", twiml);
-        
-        // Now you need to handle this TwiML to trigger playback or send it to Twilio
-        // Example: if you need to call a Twilio API to initiate playback, do it here
+  console.log("New Connection Initiated");
+  let callSid = null;
+  let callDetails = null;
+  let recognizeStream = null;
+ 
+  // Store partial transcriptions for faster processing
+  let currentTranscription = "";
+  let processingTranscription = false;
+  let isFirstInteraction = true;
+ 
+  ws.on("message", async function incoming(message) {
+    const msg = JSON.parse(message);
+    switch (msg.event) {
+      case "connected":
+        console.log(`A new call has connected.`);
         break;
-  
-        case "start":
-          callSid1 = msg.start.callSid;
-          recognizeStream = client.streamingRecognize(request)
-            .on("error", console.error)
-            .on("data", async (data) => {
-              if (data.results[0] && data.results[0].isFinal) {
-                const transcribedText = data.results[0].alternatives[0].transcript;
-                console.log("Transcribed Text:", transcribedText);
-                const audioDurationInSeconds = data.results[0].resultEndTime.seconds;
-                const googleCharge = (audioDurationInSeconds / 60) * 0.006;
-  
-                // Pause detection logic
-                if (Date.now() - lastAudioReceivedTime > PAUSE_THRESHOLD) {
-                  //console.log("Speech finished, checking for missing data.");
-  
-                  // Fetch caller details from the database
-                  selectQuery('SELECT * FROM calls WHERE unique_identifier = ?', [callSid1])
-                    .then(async (result) => {
-                      const callDetails = result[0];
-
-                      // Check for missing data and prompt for each field if necessary
-                      if (
-                        callDetails.caller_name == null || callDetails.caller_name === 'Not provided' ||
-                        callDetails.caller_role == null || callDetails.caller_role === 'Not provided' ||
-                        callDetails.caller_department == null || callDetails.caller_department === 'Not provided' ||
-                        callDetails.caller_issue == null || callDetails.caller_issue === 'Not provided'
-                      ) {
-                        // Missing data, need to ask for details
-                        if (!isNameCollected) {
-                            console.log("Extracting Name from the transcription...");
-                            const prompt = `Extract the name from the following text: "${transcribedText}"`;
-                            const response = await openai.chat.completions.create({
-                              model: "gpt-3.5-turbo",
-                              messages: [{ role: "user", content: prompt }],
-                            });
-                            callerName = response.choices[0].message.content;
-                            console.log("Extracted Name:", callerName);
-                            isNameCollected = true;
-
-                            // Update database with name and move to next step
-                            updateQuery('UPDATE calls SET caller_name = ?, start_time = ? WHERE unique_identifier = ?',
-                              [callerName, new Date(), callSid1]
-                            );
-                            const twimlResponse = `
-                            <Response>
-                              <Say>Thank you, ${callerName}. Please tell me your role.</Say>
-                            </Response>
-                          `;
-                          
-                          console.log("twimlResponse: ", twimlResponse);
-                          
-                          // Send TwiML response via WebSocket with the correct event
-                          ws.send(JSON.stringify({
-                            event: "twilio-playback", 
-                            twilioTwiML: twimlResponse
-                          }));
-                          
-                        }
-  
-                        if (!isRoleCollected) {
-                            console.log("Extracting Role from the transcription...");
-                            const prompt = `Extract the role from the following text: "${transcribedText}"`;
-                            const response = await openai.chat.completions.create({
-                              model: "gpt-3.5-turbo",
-                              messages: [{ role: "user", content: prompt }],
-                            });
-                            callerRole = response.choices[0].message.content;
-                            console.log("Extracted role:", callerRole);
-                            isRoleCollected = true;
-
-                            // Update database with role and move to next step
-                            updateQuery('UPDATE calls SET caller_role = ? WHERE unique_identifier = ?',
-                              [callerRole, callSid1]
-                            );
-  
-                            const twimlResponse = `
-                              <Response>
-                                <Say>Thank you, ${callerRole}. Please tell me your department.</Say>
-                              </Response>
-                            `;
-                            ws.send(JSON.stringify({ event: "twilio-playback", twilioTwiML: twimlResponse }));
-                            return;
-                        }
-  
-                        if (!isDepartmentCollected) {
-                          console.log("Extracting Department from the transcription...");
-                          const prompt = `Extract the department from the following text: "${transcribedText}"`;
-                          const response = await openai.chat.completions.create({
-                            model: "gpt-3.5-turbo",
-                            messages: [{ role: "user", content: prompt }],
-                          });
-                          callerDepartment = response.choices[0].message.content;
-                          console.log("Extracted department:", callerDepartment);
-                          isDepartmentCollected = true;
-
-                          // Update database with department and move to next step
-                          updateQuery('UPDATE calls SET caller_department = ? WHERE unique_identifier = ?',
-                            [callerDepartment, callSid1]
-                          );
-  
-                          const twimlResponse = `
-                            <Response>
-                              <Say>Thank you, ${callerDepartment}. Please tell me the issue you're facing and its severity.</Say>
-                            </Response>
-                          `;
-                          ws.send(JSON.stringify({ 
-                            event: "media", 
-                            streamSid: callSid1,
-                            media: {
-                              payload: Buffer.from(twimlResponse).toString('base64')
-                            }
-                          }));
-                          return;
-                        }
-  
-                        if (!isIssueCollected) {
-                          console.log("Extracting Issue from the transcription...");
-                          const prompt = `Extract the issue from the following text: "${transcribedText}"`;
-                          const response = await openai.chat.completions.create({
-                            model: "gpt-3.5-turbo",
-                            messages: [{ role: "user", content: prompt }],
-                          });
-                          callerIssue = response.choices[0].message.content;
-                          console.log("Extracted issue:", callerIssue);
-                          isIssueCollected = true;
-
-                          // Update database with issue and finalize the process
-                          updateQuery('UPDATE calls SET caller_issue = ? WHERE unique_identifier = ?',
-                            [callerIssue, callSid1]
-                          );
-  
-                          const twimlResponse = `
-                            <Response>
-                              <Say>Thank you for providing the information. Please hold while we process your request.</Say>
-                            </Response>
-                          `;
-                          ws.send(JSON.stringify({ event: "twilio-playback", twilioTwiML: twimlResponse }));
-  
-                          // Continue with the OpenAI processing
-                          const openAIResponse = await openai.chat.completions.create({
-                            model: "gpt-3.5-turbo",
-                            messages: [{ role: "user", content: `Please help with this issue: ${callerIssue}` }],
-                          });
-                          const aiResponse = openAIResponse.choices[0].message.content;
-
-                          const usage = openAIResponse.usage;
-                          const model = openAIResponse.model;
-                          const modelPricing = Price(model);
-                          const promptCost = usage.prompt_tokens * modelPricing.prompt / 1000;
-                          const completionCost = usage.completion_tokens * modelPricing.completion / 1000;
-                          const totalCost = promptCost + completionCost;
-                          const totalCharge = totalCost.toFixed(6);
-                          const totalTokens = usage.total_tokens;
-  
-                          insertQuery('INSERT INTO charges (calls_id, ai_charge, ai_balance_amount, ai_tokens_used, transcript, created_at, prompt_charges, completion_charges, prompt_Token, completion_Token, ai_model, prompt, google_stt_charge, google_audio_duration, ai_model_ui) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', 
-                            [callSid1, totalCharge, 0, totalTokens, aiResponse, new Date(), promptCost, completionCost, usage.prompt_tokens, usage.completion_tokens, model, callerIssue, googleCharge.toFixed(6), audioDurationInSeconds, 'Phone']
-                          )
-                            .then(result => {
-                              console.log('AI charge details inserted into the database');
-                            })
-                            .catch(err => {
-                              console.error('Error inserting AI charge details:', err);
-                            });
-                        }
-                      }
-                    });
+      case "start":
+        callSid = msg.start.callSid;
+        console.log(`Starting media stream for call: ${callSid}`);
+       
+        // Fetch call details - do this once and store for later use
+        try {
+          const result = await selectQuery('SELECT * FROM calls WHERE unique_identifier = ?', [callSid]);
+         
+          if (result.length > 0) {
+            callDetails = result[0];
+            console.log(`Call details loaded: ${JSON.stringify(callDetails)}`);
+          }
+        } catch (err) {
+          console.error('Error fetching call details:', err);
+        }
+        // Update start time immediately
+        const start_time = new Date();
+        updateQuery('UPDATE calls SET start_time = ? WHERE unique_identifier = ?', [start_time, callSid])
+          .catch(err => console.error('Error updating start time:', err));
+        recognizeStream = createRecognizeStream(async (data, transcription, isFinal) => {
+          // Skip if we're already processing
+          if (processingTranscription) return;
+         
+          // Store the transcription
+          currentTranscription = transcription;
+         
+          // Only process final results
+          if (isFinal) {
+            processingTranscription = true;
+           
+            console.log("Final Transcribed Text:", transcription);
+           
+            try {
+              // Calculate audio duration and costs
+              const audioDurationInSeconds = data.results[0].resultEndTime.seconds || 1;
+              const googleCharge = (audioDurationInSeconds / 60) * 0.006;
+             
+              // Process the transcribed text with OpenAI - use a faster model for short texts
+              const model = "gpt-3.5-turbo";
+             
+              // Check if call is still active before sending acknowledgment
+              if (await isCallActive(callSid)) {
+                // Send immediate acknowledgment to keep the call responsive
+                await updateCallIfActive(callSid, `<Response><Say>Processing your request...</Say><Gather input="speech" timeout="1" /></Response>`);
+              } else {
+                console.log(`Call ${callSid} is no longer active, skipping processing`);
+                processingTranscription = false;
+                return;
+              }
+              
+              // Determine which content to use for processing
+              let userIssue = '';
+              let useOriginalIssue = false;
+              const dept = callDetails?.caller_department || 'unknown';
+              
+              // Check if this is the first interaction or if transcription is minimal
+              console.log("isFirstInteraction", isFirstInteraction);
+              if (isFirstInteraction === true) {
+                if (callDetails && callDetails.caller_issue) {
+                  userIssue = callDetails.caller_issue;
+                  useOriginalIssue = true;
+                  console.log("Using original issue from database:", userIssue);
+                } else {
+                  userIssue = transcription;
+                  console.log("No original issue available, using transcription:", userIssue);
                 }
               } else {
-                lastAudioReceivedTime = Date.now();
+                // Use the current transcription for subsequent interactions
+                userIssue = transcription;
+                console.log("Using current transcription as user issue:", userIssue);
               }
-            });
-          break;
-  
-        case "media":
+              
+              // Mark that we've processed the first interaction
+              isFirstInteraction = false;
+
+              // Step 1: Extract keywords from the issue using OpenAI
+              const keywordExtractionPrompt = `Extract the main keywords (maximum 5) from this text that would be useful for a knowledge base search. Return only the keywords separated by commas: "${userIssue}"`;             
+              let keywordResponse;
+              try {
+                keywordResponse = await callOpenAIWithTimeout(keywordExtractionPrompt, "gpt-3.5-turbo");
+                const keywords = keywordResponse.choices[0].message.content.trim();
+                console.log("Extracted keywords:", keywords);
+                
+                // Step 2: Search the knowledge base with error handling
+                let searchResults = [];
+                try {
+                  searchResults = await Promise.race([
+                    searchDocuments(keywords, dept),
+                    new Promise((_, reject) => 
+                      setTimeout(() => reject(new Error('Weaviate search timeout')), 5000)
+                    )
+                  ]);
+                  console.log("Search results count:", searchResults ? searchResults.length : 0);
+                } catch (searchError) {
+                  console.error("Error or timeout during document search:", searchError);
+                  // Continue with empty results if search fails
+                  searchResults = [];
+                }
+                
+                // Step 3: Process the results and create a prompt for OpenAI
+                let prompt = '';
+                
+                if (searchResults && searchResults.length > 0) {
+                  console.log("Processing search results");
+                  
+                  // Limit context size to prevent token overflow
+                  const limitedResults = limitContextSize(searchResults);
+                  console.log(`Using ${limitedResults.documents.length} of ${searchResults.length} documents (est. ${limitedResults.estimatedTokens} tokens)`);
+                  
+                  // Extract relevant content from limited search results
+                  const contextualInformation = limitedResults.documents.map(doc => {
+                    return `Document: ${doc.title || 'Untitled'}\n${doc.content || 'No content available'}`;
+                  }).join('\n\n');
+                  
+                  // Add a warning if we truncated results
+                  const truncationNotice = limitedResults.truncated ? 
+                    "Note: Some knowledge base results were omitted due to size constraints." : "";
+                  
+                  if (useOriginalIssue) {
+                    prompt = `User ${callDetails?.caller_name || 'A caller'} is from ${callDetails?.caller_department || 'unknown department'}.
+                    They initially reported this issue: "${userIssue}". 
+                    
+                    Based on our knowledge base, here is relevant information - DO NOT ALTER THIS CONTENT:
+                    ${contextualInformation}
+                    
+                    ${truncationNotice}
+                    
+                    Instructions:
+                    1. Provide the most accurate answer based ONLY on the information from our knowledge base above.
+                    2. Do not modify or paraphrase the technical information from the knowledge base.
+                    3. If multiple documents are provided, use ONLY the most relevant one for the user's specific issue.
+                    4. Present information directly from the most relevant document that best answers the user's question.
+                    5. Keep your response concise and focused on solving their issue.`;
+                  } else {
+                    prompt = `User ${callDetails?.caller_name || 'A caller'} is a ${callDetails?.caller_role || 'user'} from ${callDetails?.caller_department || 'unknown department'}.
+                    They are saying: "${transcription}". 
+                    
+                    Based on our knowledge base, here is relevant information - DO NOT ALTER THIS CONTENT:
+                    ${contextualInformation}
+                    
+                    ${truncationNotice}
+                    
+                    Instructions:
+                    1. Provide the most accurate answer based ONLY on the information from our knowledge base above.
+                    2. Do not modify or paraphrase the technical information from the knowledge base.
+                    3. If multiple documents are provided, use ONLY the most relevant one for the user's specific issue.
+                    4. Present information directly from the most relevant document that best answers the user's question.
+                    5. Keep your response concise and focused on solving their issue.`;
+                  }
+                } else {
+                  console.log("No search results found");
+                  // No search results found - determine appropriate prompt
+                  if (useOriginalIssue) {
+                    prompt = `User ${callDetails?.caller_name || 'A caller'} is a ${callDetails?.caller_role || 'user'} from ${callDetails?.caller_department || 'unknown department'}.
+                    They initially reported this issue: "${userIssue}".
+                    I couldn't find specific information about this in our knowledge base. Please provide a helpful response that addresses their issue about "${userIssue}" and asks for more specific details if needed.`;
+                  } else {
+                    prompt = `User ${callDetails?.caller_name || 'A caller'} is a ${callDetails?.caller_role || 'user'} from ${callDetails?.caller_department || 'unknown department'}.
+                    They are saying: "${transcription}".
+                    I couldn't find specific information about this in our knowledge base. Please provide a helpful response that acknowledges their input and asks for more specific details.`;
+                  }
+                }
+                console.log("Prompt size:", prompt.length, "characters");
+                
+                // Safety check - if prompt is too large, truncate context
+                if (prompt.length > 8000) {
+                  console.warn("Prompt exceeds safe size, truncating further");
+                  prompt = prompt.substring(0, 8000) + "... [content truncated due to size]";
+                }
+
+                // Call OpenAI with the enhanced prompt
+                const openAIResponse = await callOpenAIWithTimeout(prompt, model);
+                const aiResponse = openAIResponse.choices[0].message.content;
+                console.log("AI response is:", aiResponse);
+                console.log("AI response size:", aiResponse.length, "characters");
+                
+                // Calculate costs
+                const usage = openAIResponse.usage;
+                const modelPricing = Price(model);
+                const promptCost = usage.prompt_tokens * modelPricing.prompt / 1000;
+                const completionCost = usage.completion_tokens * modelPricing.completion / 1000;
+                const totalCost = promptCost + completionCost;
+                
+                // Add keyword extraction costs
+                const keywordUsage = keywordResponse.usage;
+                const keywordPromptCost = keywordUsage.prompt_tokens * modelPricing.prompt / 1000;
+                const keywordCompletionCost = keywordUsage.completion_tokens * modelPricing.completion / 1000;
+                const keywordTotalCost = keywordPromptCost + keywordCompletionCost;
+                
+                const finalTotalCharge = (totalCost + keywordTotalCost).toFixed(6);
+                const finalTotalTokens = usage.total_tokens + keywordUsage.total_tokens;
+                console.log("Total tokens used:", finalTotalTokens);
+
+                // Insert AI response details into database - do this asynchronously
+                insertQuery('INSERT INTO charges (calls_id, ai_charge, ai_balance_amount, ai_tokens_used, transcript, created_at, prompt_charges, completion_charges, prompt_Token, completion_Token, ai_model, prompt, google_stt_charge, google_audio_duration, ai_model_ui) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                  [callSid, finalTotalCharge, 0, finalTotalTokens, aiResponse, new Date(), promptCost + keywordPromptCost, completionCost + keywordCompletionCost, usage.prompt_tokens + keywordUsage.prompt_tokens, usage.completion_tokens + keywordUsage.completion_tokens, model, userIssue, googleCharge.toFixed(6), audioDurationInSeconds, 'Phone']
+                ).catch(err => console.error('Error inserting AI charge details:', err));
+                
+                // Also log the keywords and search results for analytics
+                insertQuery('INSERT INTO search_logs (calls_id, keywords, search_results_count, created_at) VALUES (?, ?, ?, ?)',
+                  [callSid, keywords, searchResults ? searchResults.length : 0, new Date()]
+                ).catch(err => console.error('Error logging search details:', err));
+                
+                // Format response for better TTS readability
+                const formattedResponse = formatTTSResponse(aiResponse);
+                
+                // Set timeout based on whether we found relevant info
+                const timeoutValue = searchResults && searchResults.length > 0 ? 5 : 10;
+                
+                // Check if call is still active before sending response
+                if (await isCallActive(callSid)) {
+                  // Send the response to the user
+                  await updateCallIfActive(callSid, `<Response><Say>${formattedResponse}</Say><Gather input="speech" timeout="${timeoutValue}" /></Response>`);
+                } else {
+                  console.log(`Call ${callSid} ended during processing`);
+                }
+                
+              } catch (keywordError) {
+                console.error("Error in keyword extraction:", keywordError);
+                // Fallback for keyword extraction error
+                await updateCallIfActive(callSid, `<Response><Say>I'm having trouble processing your request. Could you please try rephrasing your question?</Say><Gather input="speech" timeout="5" /></Response>`);
+              }
+            } catch (error) {
+              console.error("Error processing transcription:", error);
+              
+              // Attempt to capture error details for diagnosis
+              let errorMessage = "Unknown error";
+              if (error.response && error.response.data) {
+                errorMessage = JSON.stringify(error.response.data);
+              } else if (error.message) {
+                errorMessage = error.message;
+              }
+              console.error("Error details:", errorMessage);
+             
+              // Log error to database for later analysis
+              try {
+                insertQuery('INSERT INTO error_logs (calls_id, error_message, created_at) VALUES (?, ?, ?)',
+                  [callSid, errorMessage.substring(0, 500), new Date()]
+                ).catch(err => console.error('Error logging error details:', err));
+              } catch (logError) {
+                console.error("Failed to log error:", logError);
+              }
+             
+              // Fallback response in case of error
+              await updateCallIfActive(callSid, `<Response><Say>I'm sorry, I'm having trouble processing that. Could you please try again with more details about your issue?</Say><Gather input="speech" timeout="5" /></Response>`);
+            } finally {
+              processingTranscription = false;
+            }
+          }
+        });
+        break;
+      case "media":
+        if (recognizeStream) {
           recognizeStream.write(msg.media.payload);
-          break;
-  
-        case "stop":
-          console.log(`Call Has Ended`);
-          updateQuery('UPDATE calls SET call_status = ?, end_time = ? WHERE unique_identifier = ?',
-            ['ended', new Date(), callSid1]
-          )
-            .then(result => {
-              console.log('Call status updated to "ended"');
-            })
-            .catch(err => {
-              console.error('Error updating call status:', err);
-            });
+        }
+        break;
+      case "stop":
+        console.log(`Call Has Ended: ${callSid}`);
+        updateQuery('UPDATE calls SET call_status = ?, end_time = ? WHERE unique_identifier = ?',
+          ['ended', new Date(), callSid]
+        ).catch(err => console.error('Error updating call status:', err));
+       
+        if (recognizeStream) {
           recognizeStream.destroy();
-          break;
-      }
-    });
+        }
+        break;
+    }
   });
-
-
-app.use(express.static("public"));
-app.use(express.json()); // Middleware to parse JSON body
-app.use(express.urlencoded({ extended: true })); // Middleware to parse x-www-form-urlencoded data
-
-app.get("/", (req, res) => res.sendFile(path.join(__dirname, "/index.html")));
-
-app.post("/incoming-call", (req, res) => {
-  // Insert a new call record into the database
-  //console.log("request details", JSON.stringify(req.body));
-
-  const callSid = req.body.CallSid; 
-  const from_number = req.body.Called;
-  const to_number = process.env.TWILIO_PHONE_NUMBER;  // Accessing environment variable
-  const caller_name = " ";
-
-  insertQuery('INSERT INTO calls (unique_identifier, from_number, to_number, caller_name, call_status, created_at) VALUES (?, ?, ?, ?, ?, ?)', 
-    [callSid, from_number, to_number, caller_name, 'started', new Date()]
-  )
-  .then(result => {
-    console.log('Call details inserted into the database');
-  })
-  .catch(err => {
-    console.error('Error inserting call details:', err);
-  });
-
-  res.set("Content-Type", "text/xml");// se
-  res.send(`
-    <Response>
-      <Start>
-        <Stream url="wss://${req.headers.host}/"/>
-      </Start>
-      <Say>Hello, welcome to Epic Health Desk, please tell me your name, role, department, and the issue you are facing.</Say>
-      <Pause length="60" />
-    </Response>
-  `);
 });
 
+app.use(express.static("public"));
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+app.get("/", (req, res) => res.sendFile(path.join(__dirname, "/index.html")));
+
+// Import and use route handlers
+const callRoutes = require('./callRoutes');
+app.use('/', callRoutes);
+
+// Start the server
 console.log("Listening on Port 3000");
-server.listen(3000);
+server.listen(3000, () => {
+  // Warm up connections on startup
+  require('./openaiService').initializeServices();
+});
