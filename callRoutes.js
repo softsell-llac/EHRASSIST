@@ -34,14 +34,34 @@ router.post("/process-basic-details", async (req, res) => {
   const callSid = req.body.CallSid;
   const speechResult = req.body.SpeechResult || "";
   
+  
   console.log(`Basic details collected: ${speechResult}`);
   
   try {
     // Extract name and department from speech result using OpenAI
-    const prompt = `Extract these fields from the text: name and department. Format your response as valid JSON with these exact field names. If any field information is missing, use "Not provided" as the value. Text: "${speechResult}" Return only the JSON object with no additional text.`;    
+    const prompt = `Extract the name and department from this text: "${speechResult}". Return only a JSON object with fields "name" and "department". Use "Not provided" for missing information.`;
+    const model = "gpt-3.5-turbo";
     
     // Call OpenAI with a timeout to prevent hanging
-    const response = await callOpenAIWithTimeout(prompt, "gpt-3.5-turbo");
+    const response = await callOpenAIWithTimeout(prompt, model);
+    
+    // Calculate and store charges for this OpenAI call
+    const usage = response.usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+    
+    // Cost rates (adjust these according to your actual rates)
+    const promptRate = 0.0015 / 1000; // $0.0015 per 1K tokens
+    const completionRate = 0.002 / 1000; // $0.002 per 1K tokens
+    
+    // Calculate costs
+    const promptCost = usage.prompt_tokens * promptRate;
+    const completionCost = usage.completion_tokens * completionRate;
+    const totalCost = promptCost + completionCost;
+    const totalTokens = usage.total_tokens || (usage.prompt_tokens + usage.completion_tokens);
+    
+    // Store charge information in database
+    await insertQuery('INSERT INTO charges (calls_id, ai_charge, ai_balance_amount, ai_tokens_used, transcript, created_at, prompt_charges, completion_charges, prompt_Token, completion_Token, ai_model, prompt, google_stt_charge, google_audio_duration, ai_model_ui) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [callSid, totalCost, 0, totalTokens, response.choices[0].message.content, new Date(), promptCost, completionCost, usage.prompt_tokens, usage.completion_tokens, model, prompt, 0, 0, 'Phone']
+    ).catch(err => console.error('Error inserting AI charge details:', err));
     
     let extractedInfo;
     try {
@@ -73,31 +93,30 @@ router.post("/process-basic-details", async (req, res) => {
       .then(() => console.log("Basic call details updated successfully"))
       .catch(err => console.error('Error updating basic call details:', err));
     
-    // Continue to collect issue and severity with TwiML response
+    // Continue to collect issue with TwiML response
     res.type('text/xml');
     res.send(`
       <Response>
         <Say voice="alice">Thank you. I've got that information.</Say>
-        <Say voice="alice">Now, please describe the issue you're experiencing and its severity.</Say>
-        <Gather input="speech" action="/process-issue-severity" method="POST" timeout="10">
-          <Say voice="alice">Is this a high, moderate, or low severity issue?</Say>
+        <Gather input="speech" action="/process-issue" method="POST" timeout="10">
+          <Say voice="alice">Please describe the issue you're experiencing.</Say>
         </Gather>
-        <Redirect method="POST">/process-issue-severity-fallback?CallSid=${callSid}</Redirect>
+        <Redirect method="POST">/process-issue-fallback?CallSid=${callSid}</Redirect>
       </Response>
     `);
     
   } catch (error) {
     console.error("Error in process-basic-details:", error);
     
-    // Continue to collect issue and severity even if there was an error
+    // Continue to collect issue even if there was an error
     res.type('text/xml');
     res.send(`
       <Response>
-        <Say voice="alice">Thank you. Now, please describe the issue you're experiencing and its severity.</Say>
-        <Gather input="speech" action="/process-issue-severity" method="POST" timeout="10">
-          <Say voice="alice">Is this a high, moderate, or low severity issue?</Say>
+        <Say voice="alice">Thank you. Let's continue.</Say>
+        <Gather input="speech" action="/process-issue" method="POST" timeout="10">
+          <Say voice="alice">Please describe the issue you're experiencing.</Say>
         </Gather>
-        <Redirect method="POST">/process-issue-severity-fallback?CallSid=${callSid}</Redirect>
+        <Redirect method="POST">/process-issue-fallback?CallSid=${callSid}</Redirect>
       </Response>
     `);
   }
@@ -122,18 +141,60 @@ router.post("/process-basic-details-fallback", async (req, res) => {
       <Gather input="speech" action="/process-basic-details" method="POST" timeout="10">
         <Say voice="alice">Please tell me your name and department.</Say>
       </Gather>
-      <Redirect method="POST">/collect-issue-severity?CallSid=${callSid}</Redirect>
+      <Redirect method="POST">/process-issue?CallSid=${callSid}</Redirect>
     </Response>
   `);
 });
 
-// Helper route to collect issue and severity
-router.post("/collect-issue-severity", async (req, res) => {
+// Process issue separately
+router.post("/process-issue", async (req, res) => {
+  const callSid = req.body.CallSid;
+  const speechResult = req.body.SpeechResult || "";
+  
+  console.log(`Issue details collected: ${speechResult}`);
+  
+  try {
+    // Simply save the raw speech result as the issue
+    await updateQuery('UPDATE calls SET caller_issue = ? WHERE unique_identifier = ?', 
+      [speechResult, callSid])
+      .then(() => console.log("Issue details updated successfully"))
+      .catch(err => console.error('Error updating issue details:', err));
+    
+    // Now continue to collect severity separately
+    res.type('text/xml');
+    res.send(`
+      <Response>
+        <Say voice="alice">Thank you for describing your issue.</Say>
+        <Gather input="speech" action="/process-severity" method="POST" timeout="7">
+          <Say voice="alice">Please tell me the severity of this issue. Is it high, medium, or low?</Say>
+        </Gather>
+        <Redirect method="POST">/process-severity-fallback?CallSid=${callSid}</Redirect>
+      </Response>
+    `);
+  } catch (error) {
+    console.error("Error in process-issue:", error);
+    
+    // Continue to severity question even if there was an error
+    res.type('text/xml');
+    res.send(`
+      <Response>
+        <Say voice="alice">Thank you for that information.</Say>
+        <Gather input="speech" action="/process-severity" method="POST" timeout="7">
+          <Say voice="alice">Please tell me the severity of this issue. Is it high, medium, or low?</Say>
+        </Gather>
+        <Redirect method="POST">/process-severity-fallback?CallSid=${callSid}</Redirect>
+      </Response>
+    `);
+  }
+});
+
+// Fallback route if no speech is detected for issue
+router.post("/process-issue-fallback", async (req, res) => {
   const callSid = req.body.CallSid;
   
-  // Check if call is still active
+  // Check if call is still active before responding
   if (!await isCallActive(callSid)) {
-    console.log(`Call ${callSid} is no longer active, skipping`);
+    console.log(`Call ${callSid} is no longer active, skipping fallback`);
     res.type('text/xml');
     res.send('<Response></Response>');
     return;
@@ -142,58 +203,76 @@ router.post("/collect-issue-severity", async (req, res) => {
   res.type('text/xml');
   res.send(`
     <Response>
-      <Say voice="alice">Now, please describe the issue you're experiencing and its severity.</Say>
-      <Gather input="speech" action="/process-issue-severity" method="POST" timeout="10">
-        <Say voice="alice">Is this a high, moderate, or low severity issue?</Say>
+      <Say voice="alice">I didn't hear your response about the issue.</Say>
+      <Gather input="speech" action="/process-issue" method="POST" timeout="10">
+        <Say voice="alice">Please describe the issue you're experiencing.</Say>
       </Gather>
-      <Redirect method="POST">/process-issue-severity-fallback?CallSid=${callSid}</Redirect>
+      <Redirect method="POST">/process-severity?CallSid=${callSid}</Redirect>
     </Response>
   `);
 });
 
-// Process issue and severity details
-router.post("/process-issue-severity", async (req, res) => {
+// Process severity separately
+router.post("/process-severity", async (req, res) => {
   const callSid = req.body.CallSid;
   const speechResult = req.body.SpeechResult || "";
   
-  console.log(`Issue and severity details collected: ${speechResult}`);
+  console.log(`Severity details collected: ${speechResult}`);
   
   try {
-    // Extract issue and severity from speech result using OpenAI
-    const prompt = `Extract these fields from the text: issue and severity. For severity, categorize as "High", "Medium", or "Low" based on context. Format your response as valid JSON with these exact field names. If any field information is missing, use "Not provided" for issue and "Medium" for severity. Text: "${speechResult}" Return only the JSON object with no additional text.`;    
+    // Check if we want to use AI for severity classification
+    const useAIForSeverity = true; // Set to true to use OpenAI for severity classification if open ai call is required then set as true else false
     
-    // Call OpenAI with a timeout to prevent hanging
-    const response = await callOpenAIWithTimeout(prompt, "gpt-3.5-turbo");
+    let severity = "Medium"; // Default
     
-    let extractedInfo;
-    try {
-      let jsonStr = response.choices[0].message.content.trim();
-      // Remove any potential non-JSON text before or after the JSON object
-      jsonStr = jsonStr.replace(/^[^{]*/, '').replace(/[^}]*$/, '');
-      extractedInfo = JSON.parse(jsonStr);
-      console.log("extractedInfo from JSON:", extractedInfo);
-    } catch (parseError) {
-      console.error("Error parsing JSON response:", parseError);
-      // Fallback extraction if JSON parsing fails
-      extractedInfo = {
-        issue: speechResult,
-        severity: "Medium"
-      };
+    if (useAIForSeverity) {
+      // Optional: Use OpenAI to classify severity with more nuance
+      const prompt = `Classify the severity of this issue as either "High", "Medium", or "Low": "${speechResult}". Return only the severity level as a single word.`;
+      const model = "gpt-3.5-turbo";
+      
+      const response = await callOpenAIWithTimeout(prompt, model);
+      
+      // Calculate and store charges for this OpenAI call
+      const usage = response.usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+      
+      // Cost rates
+      const promptRate = 0.0015 / 1000;
+      const completionRate = 0.002 / 1000;
+      
+      // Calculate costs
+      const promptCost = usage.prompt_tokens * promptRate;
+      const completionCost = usage.completion_tokens * completionRate;
+      const totalCost = promptCost + completionCost;
+      const totalTokens = usage.total_tokens || (usage.prompt_tokens + usage.completion_tokens);
+      
+      // Store charge information in database
+      await insertQuery('INSERT INTO charges (calls_id, ai_charge, ai_balance_amount, ai_tokens_used, transcript, created_at, prompt_charges, completion_charges, prompt_Token, completion_Token, ai_model, prompt, google_stt_charge, google_audio_duration, ai_model_ui) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [callSid, totalCost, 0, totalTokens, response.choices[0].message.content, new Date(), promptCost, completionCost, usage.prompt_tokens, usage.completion_tokens, model, prompt, 0, 0, 'Phone']
+      ).catch(err => console.error('Error inserting AI charge details:', err));
+      
+      // Extract severity from response
+      const responseTxt = response.choices[0].message.content.trim().toLowerCase();
+      if (responseTxt.includes("high")) {
+        severity = "High";
+      } else if (responseTxt.includes("low")) {
+        severity = "Low";
+      }
+    } else {
+      // Simple keyword check for severity (no AI)
+      const speechLower = speechResult.toLowerCase();
+      if (speechLower.includes("high") || speechLower.includes("urgent") || 
+          speechLower.includes("critical") || speechLower.includes("emergency")) {
+        severity = "High";
+      } else if (speechLower.includes("low") || speechLower.includes("minor")) {
+        severity = "Low";
+      }
     }
     
-    // Ensure all fields exist with default values
-    extractedInfo = {
-      issue: extractedInfo.issue || speechResult || "Not provided",
-      severity: extractedInfo.severity || "Medium"
-    };
-    
-    console.log("Final extracted issue info:", extractedInfo);
-    
-    // Update database with extracted information
-    await updateQuery('UPDATE calls SET caller_issue = ?, severity = ? WHERE unique_identifier = ?', 
-      [extractedInfo.issue, extractedInfo.severity, callSid])
-      .then(() => console.log("Issue details updated successfully"))
-      .catch(err => console.error('Error updating issue details:', err));
+    // Update database with severity
+    await updateQuery('UPDATE calls SET severity = ? WHERE unique_identifier = ?', 
+      [severity, callSid])
+      .then(() => console.log("Severity updated successfully"))
+      .catch(err => console.error('Error updating severity:', err));
     
     // Start the conversation
     res.type('text/xml');
@@ -203,11 +282,11 @@ router.post("/process-issue-severity", async (req, res) => {
         <Start>
           <Stream url="wss://${req.headers.host}/"/>
         </Start>
-        <Gather input="speech" timeout="30" />
+        <Gather input="speech" timeout="10" />
       </Response>
     `);
   } catch (error) {
-    console.error("Error in process-issue-severity:", error);
+    console.error("Error in process-severity:", error);
     
     // Start conversation anyway if there was an error
     res.type('text/xml');
@@ -223,8 +302,8 @@ router.post("/process-issue-severity", async (req, res) => {
   }
 });
 
-// Fallback route if no speech is detected for issue and severity
-router.post("/process-issue-severity-fallback", async (req, res) => {
+// Fallback route if no speech is detected for severity
+router.post("/process-severity-fallback", async (req, res) => {
   const callSid = req.body.CallSid;
   
   // Check if call is still active before responding
@@ -238,9 +317,9 @@ router.post("/process-issue-severity-fallback", async (req, res) => {
   res.type('text/xml');
   res.send(`
     <Response>
-      <Say voice="alice">I didn't hear your response about the issue.</Say>
-      <Gather input="speech" action="/process-issue-severity" method="POST" timeout="15">
-        <Say voice="alice">Please describe the issue you're experiencing and whether it's high, moderate, or low severity.</Say>
+      <Say voice="alice">I didn't hear your response about the severity.</Say>
+      <Gather input="speech" action="/process-severity" method="POST" timeout="7">
+        <Say voice="alice">Is this a high, medium, or low severity issue?</Say>
       </Gather>
       <Redirect method="POST">/start-conversation?CallSid=${callSid}</Redirect>
     </Response>

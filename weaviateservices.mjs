@@ -34,18 +34,18 @@ async function searchDocuments(query,dept) {
          .withClassName("Documents") // Replace with your class name
          .withFields(["content", "filename", "title", "upload_date"]) // Modify according to your schema
          .withWhere({
-           operator: "And",
+           operator: "Or",
            operands: [
              {
-               operator: "And",
+               operator: "Or",
                operands: searchTerms.map(term => ({
-                 path: ["content"],
+                 path: ["manual_tags"],
                  operator: "Like",
                  valueText: term,
                }))
              },
              {
-               operator: "And",
+               operator: "Or",
                operands: searchTerms.map(term => ({
                  path: ["category"],
                  operator: "Like",
@@ -67,7 +67,7 @@ async function searchDocuments(query,dept) {
          .withClassName("Documents") // Your class name
          .withFields(["content", "filename", "title", "upload_date"]) // Fetching all known fields
          .withWhere({
-           operator: "And",
+           operator: "Or",
            operands: [
              {
                path: ["category"],
@@ -75,7 +75,7 @@ async function searchDocuments(query,dept) {
                valueText: dept // Match query anywhere in category
              },
              {
-               path: ["content"],
+               path: ["manual_tags"],
                operator: "Like", 
                valueText: query // Match query anywhere in content
              }
@@ -91,7 +91,7 @@ async function searchDocuments(query,dept) {
            .withClassName("Documents")
            .withFields(["content", "filename", "title", "upload_date"])
            .withWhere({
-             operator: "And",
+             operator: "Or",
              operands: [
                {
                  path: ["category"],
@@ -99,7 +99,7 @@ async function searchDocuments(query,dept) {
                  valueText: dept 
                },
                {
-                 path: ["content"],
+                 path: ["manual_tags"],
                  operator: "Like", 
                  valueText: query
                },
