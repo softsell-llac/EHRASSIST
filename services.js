@@ -159,10 +159,10 @@ wss.on("connection", function connection(ws) {
                                 const keywordPromptCost = keywordUsage.prompt_tokens * modelPricing.prompt / 1000;
                                 const keywordCompletionCost = keywordUsage.completion_tokens * modelPricing.completion / 1000;
                                 const keywordTotalCost = keywordPromptCost + keywordCompletionCost;
-                                const keywordTotalTokens = keywordUsage.prompt_tokens+keywordUsage.completion_tokens;
+                                const keywordTotalTokens = keywordUsage.prompt_tokens + keywordUsage.completion_tokens;
 
                                 insertQuery('INSERT INTO charges (calls_id, ai_charge, ai_balance_amount, ai_tokens_used, transcript, created_at, prompt_charges, completion_charges, prompt_Token, completion_Token, ai_model, prompt, google_stt_charge, google_audio_duration, ai_model_ui) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                                    [callSid, keywordTotalCost, 0, keywordTotalTokens, keywords, new Date(), keywordPromptCost, keywordCompletionCost, keywordUsage.prompt_tokens,  keywordUsage.completion_tokens, model, keywordExtractionPrompt, 0, 0, 'Phone']
+                                    [callSid, keywordTotalCost, 0, keywordTotalTokens, keywords, new Date(), keywordPromptCost, keywordCompletionCost, keywordUsage.prompt_tokens, keywordUsage.completion_tokens, model, keywordExtractionPrompt, 0, 0, 'Phone']
                                 ).catch(err => console.error('Error inserting AI charge details:', err));
 
                                 // Step 2: Search the knowledge base with error handling 
@@ -181,7 +181,7 @@ wss.on("connection", function connection(ws) {
                                     searchResults = [];
                                 }
 
-                               
+
                                 // Step 3: Process the results and create a prompt for OpenAI
                                 let prompt = '';
 
@@ -212,7 +212,7 @@ wss.on("connection", function connection(ws) {
                                     }
 
                                     // Call OpenAI with the enhanced prompt
-                                    const openAIResponse = await callOpenAIWithTimeout(prompt, model,false);
+                                    const openAIResponse = await callOpenAIWithTimeout(prompt, model, false);
                                     const aiResponse = openAIResponse.choices[0].message.content;
                                     console.log("AI response is:", aiResponse);
                                     console.log("AI response size:", aiResponse.length, "characters");
@@ -226,7 +226,7 @@ wss.on("connection", function connection(ws) {
 
                                     // Insert AI response details into database
                                     insertQuery('INSERT INTO charges (calls_id, ai_charge, ai_balance_amount, ai_tokens_used, transcript, created_at, prompt_charges, completion_charges, prompt_Token, completion_Token, ai_model, prompt, google_stt_charge, google_audio_duration, ai_model_ui) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                                        [callSid, totalCost, 0, usage.total_tokens, aiResponse, new Date(), promptCost , completionCost , usage.prompt_tokens, usage.completion_tokens , model, prompt, googleCharge.toFixed(6), audioDurationInSeconds, 'Phone']
+                                        [callSid, totalCost, 0, usage.total_tokens, aiResponse, new Date(), promptCost, completionCost, usage.prompt_tokens, usage.completion_tokens, model, prompt, googleCharge.toFixed(6), audioDurationInSeconds, 'Phone']
                                     ).catch(err => console.error('Error inserting AI charge details:', err));
 
                                     // Format response for better TTS readability
@@ -237,15 +237,19 @@ wss.on("connection", function connection(ws) {
                                     //     await updateCallIfActive(callSid, `<Response><Say>${formattedResponse}</Say><Gather input="speech" timeout="15" /></Response>`);
                                     // }
                                     if (await isCallActive(callSid)) {
-                                        await updateCallIfActive(callSid, `<Response><Say voice="Polly.Danielle-Generative">${formattedResponse}</Say><Hangup /></Response>`);
+                                        await updateCallIfActive(callSid, `<Response>
+                                            <Say voice="Polly.Danielle-Generative">${formattedResponse}</Say>
+                                            <Say voice="Polly.Danielle-Generative">Thank you.</Say>
+                                            <Hangup />
+                                          </Response>`);
                                     }
                                 } else {
                                     console.log("No search results found, using fixed response");
                                     //const callername=callDetails.caller_name;
 
                                     // Fixed response text for no search results (no OpenAI call)
-                                    const fixedResponse = "Thank you for your question " + callDetails.caller_name +" . This seems to be unrelated to EHR clinical workflows. If you have any questions related to navigating your EHR system, I'd be happy to assist!.";
-                                   
+                                    const fixedResponse = "Thank you for your question " + callDetails.caller_name + " . This seems to be unrelated to EHR clinical workflows. If you have any questions related to navigating your EHR system, please call back. thank you.";
+
                                     // Log the fixed response usage
                                     insertQuery('INSERT INTO charges (calls_id, ai_charge, ai_balance_amount, ai_tokens_used, transcript, created_at, prompt_charges, completion_charges, prompt_Token, completion_Token, ai_model, prompt, google_stt_charge, google_audio_duration, ai_model_ui) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
                                         [callSid, 0, 0, 0, fixedResponse, new Date(), 0, 0, 0, 0, 'NA', fixedResponse, 0, 0, 'Phone']

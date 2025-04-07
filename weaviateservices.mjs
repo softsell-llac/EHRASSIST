@@ -64,7 +64,7 @@ async function searchDocuments(query, dept) {
           }
         ]
       })
-      .withLimit(3) 
+      .withLimit(10) 
       .do();
     
     // If no results found for manual_tags, don't perform fallback search

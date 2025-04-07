@@ -227,7 +227,7 @@ router.post("/process-severity", async (req, res) => {
     
     if (useAIForSeverity) {
       // Optional: Use OpenAI to classify severity with more nuance
-      const prompt = `Classify the severity of this issue as either "High", "Medium", or "Low": "${speechResult}". Return only the severity level as a single word.`;
+      const prompt = `Classify the severity of this issue as "High", "Medium", or "Low": "${speechResult}". Return the severity level as a single word of "High", "Medium", or "Low" only.`;
       const model = "gpt-3.5-turbo";
       
       const response = await callOpenAIWithTimeout(prompt, model);
