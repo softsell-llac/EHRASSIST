@@ -113,7 +113,7 @@ wss.on("connection", function connection(ws) {
                             // Check if call is still active before sending acknowledgment
                             if (await isCallActive(callSid)) {
                                 // Send immediate acknowledgment to keep the call responsive
-                                await updateCallIfActive(callSid, `<Response><Say>Processing your request...</Say><Gather input="speech" timeout="1" /></Response>`);
+                                await updateCallIfActive(callSid, `<Response><Say voice="Polly.Danielle-Generative">Processing your request...</Say><Gather input="speech" timeout="1" /></Response>`);
                             } else {
                                 console.log(`Call ${callSid} is no longer active, skipping processing`);
                                 processingTranscription = false;
@@ -204,11 +204,11 @@ wss.on("connection", function connection(ws) {
                                     if (useOriginalIssue) {
                                         prompt = `User ${callDetails?.caller_name || 'A caller'} initially reported: "${userIssue}".Knowledge base information:
                                                   ${contextualInformation}${truncationNotice}                        
-                                                  Provide a concise answer using only the most relevant information from the knowledge base above.`;
+                                                  Provide an exact answer using only the most relevant information from the knowledge base above.`;
                                     } else {
                                         prompt = `User ${callDetails?.caller_name || 'A caller'} is saying: "${transcription}".Knowledge base information:
                                                   ${contextualInformation}${truncationNotice}                        
-                                                  Provide a concise answer using only the most relevant information from the knowledge base above.`;
+                                                  Provide an exact answer using only the most relevant information from the knowledge base above.`;
                                     }
 
                                     // Call OpenAI with the enhanced prompt
@@ -233,16 +233,19 @@ wss.on("connection", function connection(ws) {
                                     const formattedResponse = formatTTSResponse(aiResponse);
 
                                     // Send the response to the user with appropriate timeout
+                                    // if (await isCallActive(callSid)) {
+                                    //     await updateCallIfActive(callSid, `<Response><Say>${formattedResponse}</Say><Gather input="speech" timeout="15" /></Response>`);
+                                    // }
                                     if (await isCallActive(callSid)) {
-                                        await updateCallIfActive(callSid, `<Response><Say>${formattedResponse}</Say><Gather input="speech" timeout="15" /></Response>`);
+                                        await updateCallIfActive(callSid, `<Response><Say voice="Polly.Danielle-Generative">${formattedResponse}</Say><Hangup /></Response>`);
                                     }
                                 } else {
                                     console.log("No search results found, using fixed response");
+                                    //const callername=callDetails.caller_name;
 
                                     // Fixed response text for no search results (no OpenAI call)
-                                    const fixedResponse = "I couldn't find specific information about this in our knowledge base. Please provide a helpful response that acknowledges their input and asks for more specific details.";
-                                    //console.log("Total tokens used:", finalTotalTokens);
-
+                                    const fixedResponse = "Thank you for your question " + callDetails.caller_name +" . This seems to be unrelated to EHR clinical workflows. If you have any questions related to navigating your EHR system, I'd be happy to assist!.";
+                                   
                                     // Log the fixed response usage
                                     insertQuery('INSERT INTO charges (calls_id, ai_charge, ai_balance_amount, ai_tokens_used, transcript, created_at, prompt_charges, completion_charges, prompt_Token, completion_Token, ai_model, prompt, google_stt_charge, google_audio_duration, ai_model_ui) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
                                         [callSid, 0, 0, 0, fixedResponse, new Date(), 0, 0, 0, 0, 'NA', fixedResponse, 0, 0, 'Phone']
@@ -250,8 +253,12 @@ wss.on("connection", function connection(ws) {
 
 
                                     // Send the fixed response to the user with longer timeout for user to respond
+                                    // if (await isCallActive(callSid)) {
+                                    //     await updateCallIfActive(callSid, `<Response><Say>${fixedResponse}</Say><Gather input="speech" timeout="10" /></Response>`);
+                                    // }
+                                    // this is will hang up after saying 
                                     if (await isCallActive(callSid)) {
-                                        await updateCallIfActive(callSid, `<Response><Say>${fixedResponse}</Say><Gather input="speech" timeout="10" /></Response>`);
+                                        await updateCallIfActive(callSid, `<Response><Say voice="Polly.Danielle-Generative">${fixedResponse}</Say><Hangup /></Response>`);
                                     }
                                 }
 
@@ -263,7 +270,7 @@ wss.on("connection", function connection(ws) {
                             } catch (keywordError) {
                                 console.error("Error in keyword extraction:", keywordError);
                                 // Fallback for keyword extraction error
-                                await updateCallIfActive(callSid, `<Response><Say>I'm having trouble processing your request. Could you please try rephrasing your question?</Say><Gather input="speech" timeout="5" /></Response>`);
+                                await updateCallIfActive(callSid, `<Response><Say voice="Polly.Danielle-Generative">I'm having trouble processing your request. Could you please try rephrasing your question?</Say><Gather input="speech" timeout="5" /></Response>`);
                             }
                         } catch (error) {
                             console.error("Error processing transcription:", error);
@@ -287,7 +294,7 @@ wss.on("connection", function connection(ws) {
                             }
 
                             // Fallback response in case of error
-                            await updateCallIfActive(callSid, `<Response><Say>I'm sorry, I'm having trouble processing that. Could you please try again with more details about your issue?</Say><Gather input="speech" timeout="5" /></Response>`);
+                            await updateCallIfActive(callSid, `<Response><Say voice="Polly.Danielle-Generative">I'm sorry, I'm having trouble processing that. Could you please try again with more details about your issue?</Say><Gather input="speech" timeout="5" /></Response>`);
                         } finally {
                             processingTranscription = false;
                         }

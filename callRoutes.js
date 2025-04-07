@@ -20,9 +20,9 @@ router.post("/incoming-call", (req, res) => {
   res.set("Content-Type", "text/xml");
   res.send(`
     <Response>
-      <Say voice="alice">Hello and welcome to the Epic Clinical Help Desk. I'm your automated support assistant.</Say>
+      <Say voice="Polly.Danielle-Generative">Hello and welcome to the Epic Clinical Help Desk. I'm your automated support assistant.</Say>
       <Gather input="speech" action="/process-basic-details" method="POST" timeout="7">
-        <Say voice="alice">Please provide your name and department.</Say>
+        <Say voice="Polly.Danielle-Generative">Please provide your name and department.</Say>
       </Gather>
       <Redirect method="POST">/process-basic-details-fallback?CallSid=${callSid}</Redirect>
     </Response>
@@ -97,9 +97,9 @@ router.post("/process-basic-details", async (req, res) => {
     res.type('text/xml');
     res.send(`
       <Response>
-        <Say voice="alice">Thank you. I've got that information.</Say>
+        <Say voice="Polly.Danielle-Generative">Thank you. I've got that information.</Say>
         <Gather input="speech" action="/process-issue" method="POST" timeout="10">
-          <Say voice="alice">Please describe the issue you're experiencing.</Say>
+          <Say voice="Polly.Danielle-Generative">Please describe the issue you're experiencing.</Say>
         </Gather>
         <Redirect method="POST">/process-issue-fallback?CallSid=${callSid}</Redirect>
       </Response>
@@ -112,9 +112,9 @@ router.post("/process-basic-details", async (req, res) => {
     res.type('text/xml');
     res.send(`
       <Response>
-        <Say voice="alice">Thank you. Let's continue.</Say>
+        <Say voice="Polly.Danielle-Generative">Thank you. Let's continue.</Say>
         <Gather input="speech" action="/process-issue" method="POST" timeout="10">
-          <Say voice="alice">Please describe the issue you're experiencing.</Say>
+          <Say voice="Polly.Danielle-Generative">Please describe the issue you're experiencing.</Say>
         </Gather>
         <Redirect method="POST">/process-issue-fallback?CallSid=${callSid}</Redirect>
       </Response>
@@ -137,9 +137,9 @@ router.post("/process-basic-details-fallback", async (req, res) => {
   res.type('text/xml');
   res.send(`
     <Response>
-      <Say voice="alice">I didn't hear your response.</Say>
+      <Say voice="Polly.Danielle-Generative">I didn't hear your response.</Say>
       <Gather input="speech" action="/process-basic-details" method="POST" timeout="10">
-        <Say voice="alice">Please tell me your name and department.</Say>
+        <Say voice="Polly.Danielle-Generative">Please tell me your name and department.</Say>
       </Gather>
       <Redirect method="POST">/process-issue?CallSid=${callSid}</Redirect>
     </Response>
@@ -164,9 +164,9 @@ router.post("/process-issue", async (req, res) => {
     res.type('text/xml');
     res.send(`
       <Response>
-        <Say voice="alice">Thank you for describing your issue.</Say>
+        <Say voice="Polly.Danielle-Generative">Thank you for describing your issue.</Say>
         <Gather input="speech" action="/process-severity" method="POST" timeout="7">
-          <Say voice="alice">Please tell me the severity of this issue. Is it high, medium, or low?</Say>
+          <Say voice="Polly.Danielle-Generative">Please tell me the severity of this issue. Is it high, medium, or low?</Say>
         </Gather>
         <Redirect method="POST">/process-severity-fallback?CallSid=${callSid}</Redirect>
       </Response>
@@ -178,9 +178,9 @@ router.post("/process-issue", async (req, res) => {
     res.type('text/xml');
     res.send(`
       <Response>
-        <Say voice="alice">Thank you for that information.</Say>
+        <Say voice="Polly.Danielle-Generative">Thank you for that information.</Say>
         <Gather input="speech" action="/process-severity" method="POST" timeout="7">
-          <Say voice="alice">Please tell me the severity of this issue. Is it high, medium, or low?</Say>
+          <Say voice="Polly.Danielle-Generative">Please tell me the severity of this issue. Is it high, medium, or low?</Say>
         </Gather>
         <Redirect method="POST">/process-severity-fallback?CallSid=${callSid}</Redirect>
       </Response>
@@ -203,9 +203,9 @@ router.post("/process-issue-fallback", async (req, res) => {
   res.type('text/xml');
   res.send(`
     <Response>
-      <Say voice="alice">I didn't hear your response about the issue.</Say>
+      <Say voice="Polly.Danielle-Generative">I didn't hear your response about the issue.</Say>
       <Gather input="speech" action="/process-issue" method="POST" timeout="10">
-        <Say voice="alice">Please describe the issue you're experiencing.</Say>
+        <Say voice="Polly.Danielle-Generative">Please describe the issue you're experiencing.</Say>
       </Gather>
       <Redirect method="POST">/process-severity?CallSid=${callSid}</Redirect>
     </Response>
@@ -278,7 +278,7 @@ router.post("/process-severity", async (req, res) => {
     res.type('text/xml');
     res.send(`
       <Response>
-        <Say voice="alice">Thank you for all the information. Connecting you with our AI assistant now.</Say>
+        <Say voice="Polly.Danielle-Generative">Thank you for all the information. Connecting you with our AI assistant now.</Say>
         <Start>
           <Stream url="wss://${req.headers.host}/"/>
         </Start>
@@ -292,7 +292,7 @@ router.post("/process-severity", async (req, res) => {
     res.type('text/xml');
     res.send(`
       <Response>
-        <Say voice="alice">Thank you for the information. Connecting you with our AI assistant now.</Say>
+        <Say voice="Polly.Danielle-Generative">Thank you for the information. Connecting you with our AI assistant now.</Say>
         <Start>
           <Stream url="wss://${req.headers.host}/"/>
         </Start>
@@ -317,9 +317,9 @@ router.post("/process-severity-fallback", async (req, res) => {
   res.type('text/xml');
   res.send(`
     <Response>
-      <Say voice="alice">I didn't hear your response about the severity.</Say>
+      <Say voice="Polly.Danielle-Generative">I didn't hear your response about the severity.</Say>
       <Gather input="speech" action="/process-severity" method="POST" timeout="7">
-        <Say voice="alice">Is this a high, medium, or low severity issue?</Say>
+        <Say voice="Polly.Danielle-Generative">Is this a high, medium, or low severity issue?</Say>
       </Gather>
       <Redirect method="POST">/start-conversation?CallSid=${callSid}</Redirect>
     </Response>
@@ -341,7 +341,7 @@ router.post("/start-conversation", async (req, res) => {
   res.type('text/xml');
   res.send(`
     <Response>
-      <Say voice="alice">Thank you for all the information. Connecting you with our AI assistant now.</Say>
+      <Say voice="Polly.Danielle-Generative">Thank you for all the information. Connecting you with our AI assistant now.</Say>
       <Start>
         <Stream url="wss://${req.headers.host}/"/>
       </Start>

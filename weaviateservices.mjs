@@ -10,117 +10,77 @@ function initWeaviateClient() {
 }
 
 // Function to perform the search query with improved relevance
-async function searchDocuments(query,dept) {
+async function searchDocuments(query, dept) {
    const weaviateClient = initWeaviateClient();
-   console.log("Searching Weaviate for:", query);
-   
-   try {
-     // Clean up the query - if it's a comma-separated list, split and process
-     let searchTerms = query;
-     console.log("dept",dept);
- 
- 
-     if (typeof query === 'string' && query.includes(',')) {
-       searchTerms = query.split(',')
-         .map(term => term.trim())
-         .filter(term => term.length > 0);
-     }
-     
-     // If we have an array of search terms, build a more complex query
-     if (Array.isArray(searchTerms)) {
-       // Create a combined query for each term
-       const result = await weaviateClient.graphql
-         .get()
-         .withClassName("Documents") // Replace with your class name
-         .withFields(["content", "filename", "title", "upload_date"]) // Modify according to your schema
-         .withWhere({
-           operator: "Or",
-           operands: [
-             {
-               operator: "Or",
-               operands: searchTerms.map(term => ({
-                 path: ["manual_tags"],
-                 operator: "Like",
-                 valueText: term,
-               }))
-             },
-             {
-               operator: "Or",
-               operands: searchTerms.map(term => ({
-                 path: ["category"],
-                 operator: "Like",
-                 valueText: dept,
-               }))
-             }
-           ]
-         })
-         .withLimit(1) // Get top 5 results
-         .do();
-         
-       //console.log("Search results for terms array:", result.data.Get.Documents);
-       return result.data.Get.Documents;
-     }
-     // Single term search
-     else {
-       const result = await weaviateClient.graphql
-         .get()
-         .withClassName("Documents") // Your class name
-         .withFields(["content", "filename", "title", "upload_date"]) // Fetching all known fields
-         .withWhere({
-           operator: "Or",
-           operands: [
-             {
-               path: ["category"],
-               operator: "Like", 
-               valueText: dept // Match query anywhere in category
-             },
-             {
-               path: ["manual_tags"],
-               operator: "Like", 
-               valueText: query // Match query anywhere in content
-             }
-           ]
-         })
-         .withLimit(1)
-         .do();
-       
-       // If primary search returns no results, fall back to a broader search
-       if (!result.data.Get.Documents || result.data.Get.Documents.length === 0) {
-         const fallbackResult = await weaviateClient.graphql
-           .get()
-           .withClassName("Documents")
-           .withFields(["content", "filename", "title", "upload_date"])
-           .withWhere({
-             operator: "Or",
-             operands: [
-               {
-                 path: ["category"],
-                 operator: "Like", 
-                 valueText: dept 
-               },
-               {
-                 path: ["manual_tags"],
-                 operator: "Like", 
-                 valueText: query
-               },
-               
-             ]
-           })        
-           .withLimit(1)
-           .do();
-           
-         console.log("Fallback search results:", fallbackResult.data.Get.Documents);
-         return fallbackResult.data.Get.Documents;
-       }
-       
-       console.log("Primary search results:", result.data.Get.Documents);
-       return result.data.Get.Documents;
-     }
-   } catch (error) {
-     console.error("Error during search:", error);
-     return [];
-   }
- }
+  console.log("Searching Weaviate for:", query);
+  
+  try {
+    // Split the query into words
+    let searchTerms = [];
+    
+    // If query contains commas, split by commas
+    if (typeof query === 'string' && query.includes(',')) {
+      searchTerms = query.split(',')
+        .map(term => term.trim())
+        .filter(term => term.length > 0);
+    } 
+    // If no commas, split by spaces to get individual words
+    else if (typeof query === 'string') {
+      searchTerms = query.split(' ')
+        .map(term => term.trim())
+        .filter(term => term.length > 0);
+    }
+    
+    // If empty after processing, return empty array
+    if (searchTerms.length === 0) {
+      return [];
+    }
+    
+    console.log("dept", dept);
+    console.log("searchTerms", searchTerms);
+    
+    // Create a query where ANY of the words should match (Or operator)
+    const result = await weaviateClient.graphql
+      .get()
+      .withClassName("Documents") 
+      .withFields(["content", "filename", "title", "upload_date"])
+      .withWhere({
+        operator: "And",
+        operands: [
+          {
+            // Department must match
+            path: ["category"],
+            operator: "Like",
+            valueText: dept
+          },
+          {
+            // ANY word in the query should match with manual_tags
+            operator: "Or",
+            operands: searchTerms.map(term => ({
+              path: ["manual_tags"],
+              operator: "Like",
+              valueText: term,
+            }))
+          }
+        ]
+      })
+      .withLimit(3) 
+      .do();
+    
+    // If no results found for manual_tags, don't perform fallback search
+    if (!result.data.Get.Documents || result.data.Get.Documents.length === 0) {
+      console.log("No matches found in manual_tags");
+      return [];
+    }
+    
+    console.log("Search results:", result.data.Get.Documents);
+    return result.data.Get.Documents;
+    
+  } catch (error) {
+    console.error("Error during search:", error);
+    return [];
+  }
+}
 
 export {
   searchDocuments

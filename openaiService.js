@@ -45,7 +45,7 @@ function Price(model) {
 async function callOpenAIWithTimeout(prompt, model = "gpt-3.5-turbo", timeoutSetting = 15000, useCache = true) {
   const openai = getOpenAIClient();
   const cacheKey = `${model}:${prompt.slice(0, 100)}`;
-  
+  const optOut = true;
   // Use cached response if available and cache is enabled
   // if (useCache && responseCache.has(cacheKey)) {
   //   console.log("Using cached response");
@@ -59,6 +59,8 @@ async function callOpenAIWithTimeout(prompt, model = "gpt-3.5-turbo", timeoutSet
       messages: [{ role: "user", content: prompt }],
       // Increase max_tokens for more complex responses
       max_tokens: 500,
+      temperature:0.3,
+      user: optOut ? "opt-out-user" : undefined,
     });
     
     // Only race with timeout if timeout is enabled (not false)
